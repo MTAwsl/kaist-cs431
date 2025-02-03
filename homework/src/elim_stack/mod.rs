@@ -7,13 +7,14 @@ mod treiber_stack;
 /// Elimination-backoff stack based on Treiber's stack.
 pub type ElimStack<T> = base::ElimStack<T, treiber_stack::TreiberStack<T>>;
 
+/// Stack trait
+pub use base::Stack as Stack;
+
 #[cfg(test)]
 mod test {
     use std::thread::scope;
-
-    use base::Stack;
-
-    use super::*;
+    use super::ElimStack;
+    use super::Stack;
 
     #[test]
     fn push() {

@@ -8,6 +8,9 @@ use rand::{Rng, thread_rng};
 
 pub(crate) const ELIM_SIZE: usize = 16;
 pub(crate) const ELIM_DELAY: time::Duration = time::Duration::from_millis(10);
+pub(crate) const IDLE: usize = 0;
+pub(crate) const PUSH_PENDING: usize = 1;
+pub(crate) const POP_PENDING: usize = 2;
 
 #[inline]
 pub(crate) fn get_random_elim_index() -> usize {
@@ -59,6 +62,7 @@ pub trait Stack<T>: Default {
     }
 }
 
+/// Elimination backoff stack
 #[derive(Debug)]
 pub struct ElimStack<T, S: Stack<T>> {
     pub(crate) inner: S,

@@ -1,12 +1,12 @@
-use core::mem::ManuallyDrop;
+use core::mem;
 use core::ops::Deref;
 use core::ptr;
 use core::sync::atomic::Ordering;
-use std::thread;
+use std::{mem::ManuallyDrop, thread};
 
-use crossbeam_epoch::{Guard, Owned, Shared};
+use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 
-use super::base::{ELIM_DELAY, ElimStack, Stack, get_random_elim_index};
+use super::base::*;
 
 impl<T, S: Stack<T>> Stack<T> for ElimStack<T, S> {
     type PushReq = S::PushReq;
@@ -22,9 +22,30 @@ impl<T, S: Stack<T>> Stack<T> for ElimStack<T, S> {
 
         let index = get_random_elim_index();
         let slot_ref = unsafe { self.slots.get_unchecked(index) };
-        let slot = slot_ref.load(Ordering::Acquire, guard);
+        let req = req.into_shared(guard);
 
-        todo!()
+        let Ok(req) = slot_ref.compare_exchange(Shared::null(), req, Ordering::AcqRel, Ordering::Relaxed, guard) else {
+            // Current slot occupied, Retry and return.
+            let Err(req) = self.inner.try_push( unsafe { req.try_into_owned().unwrap() } , guard) else {
+                return Ok(());
+            };
+            return Err(req);
+        };
+
+        thread::sleep(ELIM_DELAY);
+
+        // Check Collision
+        if slot_ref.compare_exchange(req, Shared::null(), Ordering::AcqRel, Ordering::Relaxed, guard).is_err() {
+            // Collision
+            return Ok(());
+        };
+
+        // Retry
+        let Err(req) = self.inner.try_push( unsafe{ req.try_into_owned().unwrap() }, guard) else {
+            return Ok(());
+        };
+
+        return Err(req);
     }
 
     fn try_pop(&self, guard: &Guard) -> Result<Option<T>, ()> {
@@ -34,9 +55,34 @@ impl<T, S: Stack<T>> Stack<T> for ElimStack<T, S> {
 
         let index = get_random_elim_index();
         let slot_ref = unsafe { self.slots.get_unchecked(index) };
-        let slot = slot_ref.load(Ordering::Acquire, guard);
+        let mut slot = slot_ref.load(Ordering::Acquire, guard);
 
-        todo!()
+        if slot.is_null() {
+            thread::sleep(ELIM_DELAY);
+
+            // Try again
+            slot = slot_ref.load(Ordering::Acquire, guard);
+
+            if slot.is_null() {
+                // Still idle.
+                if let Ok(result) = self.inner.try_pop(guard) {
+                    return Ok(result);
+                }
+                return Err(());
+            }
+        }
+
+        if slot_ref.compare_exchange(slot, Shared::null(), Ordering::AcqRel, Ordering::Relaxed, guard).is_ok() {
+            // Exchanged.
+            let data: T = unsafe { ManuallyDrop::into_inner(ptr::read(slot.deref().deref())) };
+            return Ok(Some(data));
+        }
+
+        // Retry
+        if let Ok(result) = self.inner.try_pop(guard) {
+            return Ok(result);
+        }
+        return Err(())
     }
 
     fn is_empty(&self, guard: &Guard) -> bool {

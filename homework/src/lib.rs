@@ -9,7 +9,7 @@
 mod adt;
 mod arc;
 pub mod boc;
-mod elim_stack;
+pub mod elim_stack;
 mod hash_table;
 pub mod hazard_pointer;
 pub mod hello_server;

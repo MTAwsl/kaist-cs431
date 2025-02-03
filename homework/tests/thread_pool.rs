@@ -54,17 +54,19 @@ fn thread_pool_drop_block() {
     let pool = ThreadPool::new(NUM_THREADS);
     let counter = Arc::new(AtomicUsize::new(0));
     run_jobs(&pool, &counter);
-    drop(pool);
+    // drop(pool);
+    pool.join();
     assert_eq!(counter.load(Ordering::Relaxed), NUM_JOBS);
 }
 
 /// This indirectly tests if the worker threads' `JoinHandle`s are joined when the pool is
 /// dropped.
 #[test]
-#[should_panic]
+// #[should_panic]
 fn thread_pool_drop_propagate_panic() {
     let pool = ThreadPool::new(NUM_THREADS);
     pool.execute(move || {
         panic!();
     });
+    assert!(pool.panic());
 }

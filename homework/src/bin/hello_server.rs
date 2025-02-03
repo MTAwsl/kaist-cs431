@@ -2,7 +2,7 @@ use std::io;
 use std::sync::Arc;
 use std::sync::mpsc::{channel, sync_channel};
 
-use cs431_homework::hello_server::{CancellableTcpListener, Handler, Statistics, ThreadPool};
+use cs431_homework::hello_server::{CancellableTcpListener, Handler, Statistics, ThreadPool, THREADPOOL};
 
 const ADDR: &str = "localhost:7878";
 
@@ -23,7 +23,7 @@ fn main() -> io::Result<()> {
     //
     // - A reporter: it aggregates the reports from the workers and processes the statistics. When
     //   it ends, it sends the statistics to the main thread.
-    let pool = Arc::new(ThreadPool::new(7));
+    let pool = &THREADPOOL;
 
     // The (MPSC) channel of reports between workers and the reporter.
     let (report_sender, report_receiver) = channel();
