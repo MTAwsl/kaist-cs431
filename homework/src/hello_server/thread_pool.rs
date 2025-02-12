@@ -1,16 +1,17 @@
 //! Thread pool that joins all thread when dropped.
 
+use core::fmt;
 // NOTE: Crossbeam channels are MPMC, which means that you don't need to wrap the receiver in
 // Arc<Mutex<..>>. Just clone the receiver and give it to each worker thread.
-use std::sync::{Arc, Mutex, Condvar};
-use std::sync::atomic::{AtomicUsize, Ordering, AtomicBool};
-use std::{thread, time};
-use std::collections::LinkedList;
 use std::cell::RefCell;
+use std::collections::LinkedList;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::{thread, time};
 
-use crossbeam_channel::{Sender, Receiver, unbounded};
-use lazy_static::lazy_static;
 use chrono::prelude::{DateTime, Local};
+use crossbeam_channel::{Receiver, Sender, unbounded};
+use lazy_static::lazy_static;
 
 struct Job(Box<dyn FnOnce() + Send + 'static>);
 
@@ -37,7 +38,7 @@ struct ThreadPoolInner {
     job_count: AtomicUsize,
     _workers: Mutex<Vec<Worker>>,
     job_recv: Receiver<Job>,
-    shutdown: Arc<AtomicBool>
+    shutdown: Arc<AtomicBool>,
 }
 
 impl ThreadPoolInner {
@@ -65,13 +66,13 @@ impl ThreadPoolInner {
 #[derive(Debug)]
 struct PanicInfo {
     time: DateTime<Local>,
-    info: String
+    info: String,
 }
 
 #[derive(Debug)]
 struct PanicList {
     count: AtomicUsize,
-    list: Mutex<LinkedList<PanicInfo>>
+    list: Mutex<LinkedList<PanicInfo>>,
 }
 
 lazy_static! {
@@ -83,9 +84,14 @@ lazy_static! {
     pub static ref THREADPOOL: ThreadPool = ThreadPool::_new(8);
 }
 
-impl ToString for PanicInfo {
-    fn to_string(&self) -> String {
-        format!("[Panic:] [{}] {}", self.time.format("%Y-%m-%d %H:%M:%S").to_string(), self.info)
+impl fmt::Display for PanicInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "[Panic:] [{}] {}",
+            self.time.format("%Y-%m-%d %H:%M:%S"),
+            self.info
+        )
     }
 }
 
@@ -94,7 +100,7 @@ impl ToString for PanicInfo {
 pub struct ThreadPool {
     inner: Arc<ThreadPoolInner>,
     job_sender: Option<Sender<Job>>,
-    watchdog: Option<thread::JoinHandle<()>>
+    watchdog: Option<thread::JoinHandle<()>>,
 }
 
 impl ThreadPool {
@@ -110,14 +116,13 @@ impl ThreadPool {
     fn _new(size: usize) -> Self {
         assert!(size > 0);
 
-        let (sender, receiver): (Sender<Job>, Receiver<Job>) 
-                = crossbeam_channel::unbounded();
+        let (sender, receiver): (Sender<Job>, Receiver<Job>) = crossbeam_channel::unbounded();
         let mut workers: Mutex<Vec<Worker>> = Mutex::new(Vec::with_capacity(size));
         let inner = Arc::new(ThreadPoolInner {
             _workers: workers,
             job_recv: receiver,
             job_count: AtomicUsize::new(0),
-            shutdown: Arc::new(AtomicBool::new(false))
+            shutdown: Arc::new(AtomicBool::new(false)),
         });
         let watchdog_inner = Arc::clone(&inner);
 
@@ -126,7 +131,7 @@ impl ThreadPool {
             let orig_hook = panic::take_hook();
             use std::panic;
             panic::set_hook(Box::new(move |info| {
-                if !THREADPOOL.inner.shutdown.load(Ordering::Acquire) { 
+                if !THREADPOOL.inner.shutdown.load(Ordering::Acquire) {
                     let mut payload: String;
                     if let Some(s) = info.payload().downcast_ref::<&str>() {
                         payload = s.to_string();
@@ -135,12 +140,10 @@ impl ThreadPool {
                     } else {
                         payload = String::from("Explicit Panic.");
                     }
-                    _panic_info.list.lock().unwrap().push_back(
-                        PanicInfo {
-                            time: Local::now(),
-                            info: payload
-                        }
-                    );
+                    _panic_info.list.lock().unwrap().push_back(PanicInfo {
+                        time: Local::now(),
+                        info: payload,
+                    });
                     _panic_info.count.fetch_add(1, Ordering::Release);
                     panic_inner.finish_job();
                 }
@@ -159,7 +162,9 @@ impl ThreadPool {
                         }
                     }
                     thread::sleep(time::Duration::from_millis(300));
-                    if watchdog_inner.job_count.load(Ordering::Acquire) == 0 && watchdog_inner.shutdown.load(Ordering::Acquire) {
+                    if watchdog_inner.job_count.load(Ordering::Acquire) == 0
+                        && watchdog_inner.shutdown.load(Ordering::Acquire)
+                    {
                         break;
                     }
                 }
@@ -182,18 +187,16 @@ impl ThreadPool {
         workers.push(Worker {
             _id,
             thread: Some(thread::spawn(move || {
-
                 loop {
                     let r = worker_inner.job_recv.recv();
                     if let Ok(closure) = r {
                         closure.0();
                         worker_inner.finish_job();
-                    }
-                    else {
+                    } else {
                         break;
                     }
                 }
-            }))
+            })),
         })
     }
 
@@ -203,7 +206,11 @@ impl ThreadPool {
         F: FnOnce() + Send + 'static,
     {
         self.inner.start_job();
-        self.job_sender.as_ref().unwrap().send(Job{ 0: Box::new(f) }).unwrap();
+        self.job_sender
+            .as_ref()
+            .unwrap()
+            .send(Job(Box::new(f)))
+            .unwrap();
     }
 
     /// Block the current thread until all jobs in the pool have been executed.
@@ -232,7 +239,14 @@ impl Drop for ThreadPool {
         let panic_info = _panic_info.list.lock().unwrap();
         let panic_info = &*panic_info;
         if !panic_info.is_empty() {
-            panic!("{}", panic_info.into_iter().map(|x| x.to_string()).collect::<Vec<String>>().join("\n"));
+            panic!(
+                "{}",
+                panic_info
+                    .iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<String>>()
+                    .join("\n")
+            );
         }
     }
 }

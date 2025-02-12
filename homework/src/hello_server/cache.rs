@@ -2,8 +2,8 @@
 
 use std::collections::hash_map::{Entry, HashMap};
 use std::hash::Hash;
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 
 /// Cache that remembers the result for each key.
 #[derive(Debug)]
@@ -11,14 +11,14 @@ pub struct Cache<K, V> {
     // todo! This is an example cache type. Build your own cache type that satisfies the
     // specification for `get_or_insert_with`.
     raw_map: RwLock<HashMap<K, V>>,
-    lock_map: RwLock<HashMap<K, AtomicBool>>
+    lock_map: RwLock<HashMap<K, AtomicBool>>,
 }
 
 impl<K, V> Default for Cache<K, V> {
     fn default() -> Self {
         Self {
             raw_map: RwLock::new(HashMap::new()),
-            lock_map: RwLock::new(HashMap::new())
+            lock_map: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -46,18 +46,22 @@ impl<K: Eq + Hash + Clone, V: Clone> Cache<K, V> {
                 drop(m_wlock);
 
                 let val = f(key.clone());
-                self.raw_map.write().unwrap().insert(key.clone(), val.clone());
+                self.raw_map
+                    .write()
+                    .unwrap()
+                    .insert(key.clone(), val.clone());
 
+                #[allow(clippy::readonly_write_lock)]
                 let m_wlock = self.lock_map.write().unwrap();
                 m_wlock.get(&key).unwrap().store(false, Ordering::Release);
                 return val;
             }
         }
-        
+
         loop {
             let m_lock = self.lock_map.read().unwrap();
             if !m_lock.get(&key).unwrap().load(Ordering::Acquire) {
-                return self.raw_map.read().unwrap().get(&key).unwrap().clone()
+                return self.raw_map.read().unwrap().get(&key).unwrap().clone();
             }
         }
     }
@@ -70,23 +74,29 @@ impl<K: Eq + Hash + Clone, V: Clone> Cache<K, V> {
             drop(m_wlock);
 
             let val = f(key.clone());
-            self.raw_map.write().unwrap().insert(key.clone(), val.clone());
+            self.raw_map
+                .write()
+                .unwrap()
+                .insert(key.clone(), val.clone());
 
             let mut m_wlock = self.lock_map.write().unwrap();
             let lock = m_wlock.get(&key).unwrap();
             lock.store(false, Ordering::Release);
             drop(m_wlock);
-            return val;
-        }
-        else {
+            val
+        } else {
             let mut m_wlock = self.lock_map.write().unwrap();
             if m_wlock.get(&key).is_none() {
                 m_wlock.insert(key.clone(), AtomicBool::new(true));
                 drop(m_wlock);
 
                 let val = f(key.clone());
-                self.raw_map.write().unwrap().insert(key.clone(), val.clone());
+                self.raw_map
+                    .write()
+                    .unwrap()
+                    .insert(key.clone(), val.clone());
 
+                #[allow(clippy::readonly_write_lock)]
                 let m_wlock = self.lock_map.write().unwrap();
                 m_wlock.get(&key).unwrap().store(false, Ordering::Release);
                 return val;
@@ -97,14 +107,16 @@ impl<K: Eq + Hash + Clone, V: Clone> Cache<K, V> {
             drop(m_wlock);
 
             let val = f(key.clone());
-            self.raw_map.write().unwrap().insert(key.clone(), val.clone());
+            self.raw_map
+                .write()
+                .unwrap()
+                .insert(key.clone(), val.clone());
 
             let mut m_wlock = self.lock_map.write().unwrap();
             let lock = m_wlock.get(&key).unwrap();
             lock.store(false, Ordering::Release);
             drop(m_wlock);
-            return val;
+            val
         }
-        
     }
 }

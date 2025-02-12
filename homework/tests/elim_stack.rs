@@ -1,7 +1,7 @@
-use std::thread::scope;
 use std::sync::atomic::{AtomicI32, Ordering};
-use cs431_homework::elim_stack::ElimStack;
-use cs431_homework::elim_stack::Stack;
+use std::thread::scope;
+
+use cs431_homework::elim_stack::{ElimStack, Stack};
 
 #[test]
 fn push_example_simple() {
@@ -26,11 +26,11 @@ fn push_example_simple() {
 #[test]
 fn push_pop_single_thread() {
     let stack = ElimStack::default();
-    
+
     stack.push(1);
     stack.push(2);
     stack.push(3);
-    
+
     assert_eq!(stack.pop(), Some(3));
     assert_eq!(stack.pop(), Some(2));
     assert_eq!(stack.pop(), Some(1));
@@ -53,7 +53,7 @@ fn push_pop_multi_thread() {
             handles.push(handle);
         }
     });
-    
+
     assert!(stack.pop().is_none());
 }
 
@@ -78,7 +78,7 @@ fn stress_test() {
             handles.push(handle);
         }
     });
-    
+
     let mut count = 0;
     while stack.pop().is_some() {
         count += 1;
@@ -90,7 +90,7 @@ fn stress_test() {
 fn concurrent_push_pop() {
     let stack: ElimStack<i32> = ElimStack::default();
     let count = AtomicI32::new(0);
-    
+
     scope(|scope| {
         let mut handles = Vec::new();
         for _ in 0..1_000 {
@@ -101,7 +101,7 @@ fn concurrent_push_pop() {
             });
             handles.push(handle);
         }
-        
+
         for _ in 0..5 {
             let handle = scope.spawn(|| {
                 while count.load(Ordering::Acquire) < 1_000_000 {
@@ -111,9 +111,8 @@ fn concurrent_push_pop() {
                 }
             });
             handles.push(handle);
-
         }
     });
-    
+
     assert!(stack.pop().is_none());
 }

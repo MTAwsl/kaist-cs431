@@ -56,8 +56,8 @@ impl Iterator for Incoming<'_> {
     fn next(&mut self) -> Option<Self::Item> {
         let stream = self.listener.inner.accept().map(|p| p.0);
         if self.listener.is_canceled.load(Ordering::Acquire) {
-            return None
+            return None;
         }
-        return Some(stream)
+        Some(stream)
     }
 }

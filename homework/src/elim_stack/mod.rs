@@ -8,13 +8,13 @@ mod treiber_stack;
 pub type ElimStack<T> = base::ElimStack<T, treiber_stack::TreiberStack<T>>;
 
 /// Stack trait
-pub use base::Stack as Stack;
+pub use base::Stack;
 
 #[cfg(test)]
 mod test {
     use std::thread::scope;
-    use super::ElimStack;
-    use super::Stack;
+
+    use super::{ElimStack, Stack};
 
     #[test]
     fn push() {

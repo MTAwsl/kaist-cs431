@@ -147,11 +147,10 @@ impl<T> LinkedList<T> {
         node.prev = self.tail;
         node.next = ptr::null_mut();
         let node = Box::into_raw(Box::new(node));
-        
+
         if self.tail.is_null() {
             self.head = node;
-        }
-        else {
+        } else {
             unsafe { (*self.tail).next = node };
         }
 
@@ -171,8 +170,7 @@ impl<T> LinkedList<T> {
 
         if self.tail.is_null() {
             self.head = ptr::null_mut();
-        }
-        else {
+        } else {
             unsafe { (*self.tail).next = ptr::null_mut() };
         }
 
@@ -691,7 +689,7 @@ impl<'a, T> Iterator for IterMut<'a, T> {
         if self.len == 0 {
             None
         } else {
-            unsafe { 
+            unsafe {
                 self.head.as_mut().map(|node| {
                     self.len -= 1;
                     self.head = node.next;
@@ -784,11 +782,7 @@ impl<T> IterMut<'_, T> {
         if self.len == 0 {
             None
         } else {
-            unsafe { 
-                self.head.as_mut().map(|node| {
-                    &mut node.element
-                })
-            }
+            unsafe { self.head.as_mut().map(|node| &mut node.element) }
         }
     }
 }

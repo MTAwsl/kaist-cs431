@@ -21,7 +21,7 @@ const MAX_REFCOUNT: usize = (isize::MAX) as usize;
 /// allocated in the heap. Invoking [`clone`][clone] on `Arc` produces
 /// a new `Arc` instance, which points to the same allocation on the heap as the
 /// source `Arc`, while increasing a reference count. When the last `Arc`
-/// pointer to a given allocation is destroyed, the value stored in that allocation (often
+/// pointer to a given allocation is destroyed, the value tored in that allocation (often
 /// referred to as "inner value") is also dropped.
 ///
 /// Shared references in Rust disallow mutation by default, and `Arc` is no
@@ -208,14 +208,22 @@ impl<T> Arc<T> {
     /// ```
     #[inline]
     pub fn get_mut(this: &mut Self) -> Option<&mut T> {
-        todo!()
+        if this.is_unique() {
+            unsafe {
+                return Some(Arc::get_mut_unchecked(this));
+            }
+        }
+        None
     }
 
     // Used in `get_mut` and `make_mut` to check if the given `Arc` is the unique reference to the
     // underlying data.
     #[inline]
-    fn is_unique(&mut self) -> bool {
-        todo!()
+    fn is_unique(&self) -> bool {
+        if self.inner().count.load(Ordering::Acquire) == 1 {
+            return true;
+        }
+        false
     }
 
     /// Returns a mutable reference into the given `Arc` without any check.
@@ -266,7 +274,7 @@ impl<T> Arc<T> {
     /// ```
     #[inline]
     pub fn count(this: &Self) -> usize {
-        todo!()
+        this.inner().count.load(Ordering::Acquire)
     }
 
     #[inline]
@@ -317,7 +325,15 @@ impl<T> Arc<T> {
     /// ```
     #[inline]
     pub fn try_unwrap(this: Self) -> Result<T, Self> {
-        todo!()
+        if this.is_unique() {
+            unsafe {
+                let inner = Box::from_raw(this.ptr.as_ptr());
+                inner.count.store(0, Ordering::Release);
+                drop(this);
+                return Ok(inner.data);
+            }
+        }
+        Err(this)
     }
 }
 
@@ -349,7 +365,19 @@ impl<T: Clone> Arc<T> {
     /// ```
     #[inline]
     pub fn make_mut(this: &mut Self) -> &mut T {
-        todo!()
+        unsafe {
+            let mut inner = this.ptr.as_mut();
+            if this.is_unique() {
+                return &mut inner.data;
+            }
+
+            let mut inner = Box::new(ArcInner {
+                count: AtomicUsize::new(1),
+                data: inner.data.clone(),
+            });
+            this.ptr = NonNull::new(Box::into_raw(inner)).unwrap();
+            Self::get_mut_unchecked(this)
+        }
     }
 }
 
@@ -374,7 +402,11 @@ impl<T> Clone for Arc<T> {
     /// ```
     #[inline]
     fn clone(&self) -> Arc<T> {
-        todo!()
+        unsafe { (*self.ptr.as_ptr()).count.fetch_add(1, Ordering::AcqRel) };
+        Arc {
+            ptr: self.ptr,
+            phantom: self.phantom,
+        }
     }
 }
 
@@ -413,7 +445,11 @@ impl<T> Drop for Arc<T> {
     /// drop(foo2);   // Prints "dropped!"
     /// ```
     fn drop(&mut self) {
-        todo!()
+        unsafe {
+            if self.ptr.as_mut().count.fetch_sub(1, Ordering::AcqRel) == 1 {
+                self.ptr.drop_in_place();
+            }
+        }
     }
 }
 
