@@ -1,10 +1,11 @@
-//! Concurrent Owner (Cown) type.
+//! Concurrent Owner (Cown) tAcquiriype.
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::Ordering::SeqCst;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use core::{fmt, hint, ptr};
 use std::sync::Arc;
+
+use crate::hello_server::ThreadPool;
 
 /// A trait representing a `Cown`.
 ///
@@ -56,7 +57,21 @@ impl Request {
     /// `behavior` must be a valid raw pointer to the behavior for `self`, and this should be the
     /// only enqueueing of this request and behavior.
     unsafe fn start_enqueue(&self, behavior: *const Behavior) {
-        todo!()
+        let self_ptr: *mut Request = self as *const _ as *mut Request;
+        let prev_req = self.target.last().swap(self_ptr, Ordering::Relaxed);
+
+        if prev_req.is_null() {
+            unsafe { Behavior::resolve_one(behavior) };
+            return;
+        }
+
+        let prev_req = unsafe { prev_req.as_mut().unwrap() };
+
+        while !prev_req.scheduled.load(Ordering::Acquire) {
+            std::hint::spin_loop()
+        } // Spin until previous scheduled
+
+        prev_req.next.store(behavior as *mut _, Ordering::Release); // So that we can insert this behavior to the request list
     }
 
     /// Finish the second phase of the 2PL enqueue operation.
@@ -67,7 +82,7 @@ impl Request {
     ///
     /// All enqueues for smaller requests on this cown must have been completed.
     unsafe fn finish_enqueue(&self) {
-        todo!()
+        self.scheduled.store(true, Ordering::Release);
     }
 
     /// Release the cown to the next behavior.
@@ -79,7 +94,30 @@ impl Request {
     ///
     /// `self` must have been actually completed.
     unsafe fn release(&self) {
-        todo!()
+        let mut next = self.next.load(Ordering::Acquire);
+        if next.is_null() {
+            if self
+                .target
+                .last()
+                .compare_exchange(
+                    self as *const _ as *mut Request,
+                    ptr::null_mut(),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                return;
+            }
+
+            loop {
+                next = self.next.load(Ordering::Acquire);
+                if !next.is_null() {
+                    break;
+                }
+            }
+        }
+        unsafe { Behavior::resolve_one(next) };
     }
 }
 
@@ -104,6 +142,11 @@ impl Eq for Request {}
 impl fmt::Debug for Request {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Request")
+            .field("addr", &(format!("{:02x}", self as *const _ as usize)))
+            .field(
+                "last",
+                &(format!("{:02x}", self.target.last().load(Ordering::SeqCst) as usize)),
+            )
             .field("next", &self.next)
             .field("scheduled", &self.scheduled)
             .finish()
@@ -176,7 +219,19 @@ impl Behavior {
     /// Performs two phase locking (2PL) over the enqueuing of the requests.
     /// This ensures that the overall effect of the enqueue is atomic.
     fn schedule(self) {
-        todo!()
+        let ptr = Box::into_raw(Box::new(self));
+
+        unsafe {
+            for req in &(*ptr).requests {
+                req.start_enqueue(ptr);
+            }
+
+            for req in &(*ptr).requests {
+                req.finish_enqueue();
+            }
+
+            Behavior::resolve_one(ptr);
+        }
     }
 
     /// Resolves a single outstanding request for `this`.
@@ -188,13 +243,26 @@ impl Behavior {
     ///
     /// `this` must be a valid behavior.
     unsafe fn resolve_one(this: *const Self) {
-        todo!()
+        let self_ref = unsafe { this.as_ref().unwrap() };
+        if self_ref.count.fetch_sub(1, Ordering::AcqRel) != 1 {
+            return;
+        }
+
+        let self_owned: Box<Self> = unsafe { Box::from_raw(this as *mut Self) };
+
+        ThreadPool::new(0).execute(move || {
+            (self_owned.thunk)();
+            for req in &self_owned.requests {
+                unsafe { req.release() };
+            }
+        });
     }
 }
 
 impl fmt::Debug for Behavior {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Behavior")
+            .field("addr", &(format!("{:02x?}", self as *const _ as usize)))
             .field("thunk", &"BehaviorThunk")
             .field("count", &self.count)
             .field("requests", &self.requests)
@@ -209,7 +277,15 @@ impl Behavior {
         C: CownPtrs + Send + 'static,
         F: for<'l> Fn(C::CownRefs<'l>) + Send + 'static,
     {
-        todo!()
+        let mut v = cowns.requests();
+        let len = v.len() + 1;
+        v.sort();
+
+        Behavior {
+            requests: v,
+            count: AtomicUsize::new(len),
+            thunk: Box::new(move || unsafe { f(cowns.get_mut()) }),
+        }
     }
 }
 

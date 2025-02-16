@@ -1,4 +1,5 @@
 use std::cmp::Ordering::*;
+use std::ops::{Deref, DerefMut};
 use std::sync::{Mutex, MutexGuard};
 use std::{mem, ptr};
 
@@ -45,7 +46,20 @@ impl<T: Ord> Cursor<'_, T> {
     /// Moves the cursor to the position of key in the sorted list.
     /// Returns whether the value was found.
     fn find(&mut self, key: &T) -> bool {
-        todo!()
+        while !self.0.is_null() {
+            unsafe {
+                let node = self.0.as_ref().unwrap();
+                if &node.data == key {
+                    return true;
+                }
+                if &node.data > key {
+                    return false;
+                }
+
+                self.0 = node.next.lock().unwrap();
+            }
+        }
+        false
     }
 }
 
@@ -60,7 +74,12 @@ impl<T> FineGrainedListSet<T> {
 
 impl<T: Ord> FineGrainedListSet<T> {
     fn find(&self, key: &T) -> (bool, Cursor<'_, T>) {
-        todo!()
+        let mut cursor = Cursor(self.head.lock().unwrap());
+        if cursor.find(key) {
+            (true, cursor)
+        } else {
+            (false, cursor)
+        }
     }
 }
 
@@ -70,11 +89,27 @@ impl<T: Ord> ConcurrentSet<T> for FineGrainedListSet<T> {
     }
 
     fn insert(&self, key: T) -> bool {
-        todo!()
+        let cursor = self.find(&key);
+        if cursor.0 {
+            return false;
+        }
+
+        let mut prev = cursor.1.0;
+        *prev = Node::new(key, *prev);
+        true
     }
 
     fn remove(&self, key: &T) -> bool {
-        todo!()
+        let cursor = self.find(key);
+        if !cursor.0 {
+            return false;
+        }
+
+        let mut prev = cursor.1.0;
+        let mut node = unsafe { Box::from_raw(*prev) };
+        *prev = *node.next.lock().unwrap();
+        drop(node);
+        true
     }
 }
 
@@ -96,13 +131,35 @@ impl<'l, T> Iterator for Iter<'l, T> {
     type Item = &'l T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        let guard = &mut self.cursor;
+
+        if guard.is_null() {
+            None
+        } else {
+            unsafe {
+                let node = guard.as_ref().unwrap();
+                let next = node.next.lock().unwrap();
+
+                *guard = next;
+
+                Some(&node.data)
+            }
+        }
     }
 }
 
 impl<T> Drop for FineGrainedListSet<T> {
     fn drop(&mut self) {
-        todo!()
+        let mut this = self.head.lock().unwrap();
+        let mut next: MutexGuard<'_, *mut Node<T>>;
+
+        while !this.is_null() {
+            unsafe {
+                let node = this.as_ref().unwrap();
+                *this.deref_mut() = *node.next.lock().unwrap();
+                drop(Box::from_raw(node as *const _ as *mut Node<T>));
+            }
+        }
     }
 }
 

@@ -76,6 +76,7 @@ fn iter_consistent() {
             while !done.load(Acquire) {
                 let snapshot = set.iter().copied().collect::<Vec<_>>();
                 // sorted
+                println!("{:?}", snapshot);
                 assert!(snapshot.windows(2).all(|k| k[0] <= k[1]));
                 // even numbers are not touched
                 let snapshot = snapshot.into_iter().collect::<HashSet<_>>();
