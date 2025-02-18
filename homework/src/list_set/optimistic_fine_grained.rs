@@ -1,9 +1,11 @@
 use std::cmp::Ordering::*;
 use std::mem::{self, ManuallyDrop};
+use std::ops::Deref;
 use std::sync::atomic::Ordering::*;
+use std::sync::atomic::fence;
 
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared, pin};
-use cs431::lock::seqlock::{ReadGuard, SeqLock};
+use cs431::lock::seqlock::{ReadGuard, SeqLock, WriteGuard};
 
 use crate::ConcurrentSet;
 
@@ -44,7 +46,51 @@ impl<'g, T: Ord> Cursor<'g, T> {
     ///
     /// Return `Err(())` if the cursor cannot move.
     fn find(&mut self, key: &T, guard: &'g Guard) -> Result<bool, ()> {
-        todo!()
+        while !self.curr.is_null() {
+            unsafe {
+                let node = self.curr.as_ref().unwrap();
+                if &node.data == key {
+                    if !self.prev.validate() {
+                        self.prev.restart();
+                        self.curr = self.prev.load(Acquire, guard);
+                        if self.curr.is_null() {
+                            return Err(());
+                        }
+                        continue;
+                    }
+                    return Ok(true);
+                }
+                if &node.data > key {
+                    if !self.prev.validate() {
+                        self.prev.restart();
+                        self.curr = self.prev.load(Acquire, guard);
+                        if self.curr.is_null() {
+                            return Err(());
+                        }
+                        continue;
+                    }
+                    return Ok(false);
+                }
+
+                if !self.prev.validate() {
+                    self.prev.restart();
+                    self.curr = self.prev.load(Acquire, guard);
+                    if self.curr.is_null() {
+                        return Err(());
+                    }
+                    continue;
+                }
+                let mut prev: ReadGuard<'_, Atomic<Node<T>>> = node.next.read_lock();
+                mem::swap(&mut prev, &mut self.prev);
+                fence(Release);
+                self.curr = self.prev.load(Acquire, guard);
+                prev.finish();
+            }
+        }
+        if self.prev.validate() {
+            return Ok(false);
+        }
+        Err(())
     }
 }
 
@@ -65,21 +111,90 @@ impl<T> OptimisticFineGrainedListSet<T> {
 
 impl<T: Ord> OptimisticFineGrainedListSet<T> {
     fn find<'g>(&'g self, key: &T, guard: &'g Guard) -> Result<(bool, Cursor<'g, T>), ()> {
-        todo!()
+        let mut cursor = self.head(guard);
+        if let Ok(res) = cursor.find(key, guard) {
+            if cursor.prev.validate() {
+                Ok((res, cursor))
+            } else {
+                cursor.prev.finish();
+                Err(())
+            }
+        } else {
+            cursor.prev.finish();
+            Err(())
+        }
     }
 }
 
 impl<T: Ord> ConcurrentSet<T> for OptimisticFineGrainedListSet<T> {
     fn contains(&self, key: &T) -> bool {
-        todo!()
+        loop {
+            let guard = pin();
+            if let Ok(res) = self.find(key, &guard) {
+                if res.1.prev.validate() {
+                    res.1.prev.finish();
+                    return res.0;
+                }
+                res.1.prev.finish();
+            }
+        }
     }
 
     fn insert(&self, key: T) -> bool {
-        todo!()
+        let guard = pin();
+        loop {
+            let mut cursor = self.find(&key, &guard);
+
+            if cursor.is_err() {
+                continue;
+            }
+
+            let cursor = cursor.unwrap();
+            if cursor.0 {
+                cursor.1.prev.finish();
+                return false;
+            }
+
+            let handle = cursor.1.prev.upgrade();
+            if handle.is_err() {
+                continue;
+            }
+
+            let handle = handle.unwrap();
+            handle.store(Node::new(key, cursor.1.curr), Release);
+
+            return true;
+        }
     }
 
     fn remove(&self, key: &T) -> bool {
-        todo!()
+        let guard = pin();
+        loop {
+            let mut cursor = self.find(key, &guard);
+
+            if cursor.is_err() {
+                continue;
+            }
+
+            let cursor = cursor.unwrap();
+            if !cursor.0 {
+                cursor.1.prev.finish();
+                return false;
+            }
+
+            let handle = cursor.1.prev.upgrade();
+            if handle.is_err() {
+                continue;
+            }
+
+            let curr_handle = unsafe { cursor.1.curr.deref().next.write_lock() };
+
+            let handle = handle.unwrap();
+            let next = curr_handle.swap(Shared::null(), Relaxed, &guard);
+            handle.store(next, Release);
+
+            return true;
+        }
     }
 }
 
@@ -105,13 +220,47 @@ impl<'g, T> Iterator for Iter<'g, T> {
     type Item = Result<&'g T, ()>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        unsafe {
+            if !self.cursor.prev.validate() {
+                return Some(Err(()));
+            }
+
+            if self.cursor.curr.is_null() {
+                return None;
+            }
+
+            let node = self.cursor.curr.deref();
+            let mut prev = node.next.read_lock();
+            let data = &node.data;
+            mem::swap(&mut prev, &mut self.cursor.prev);
+            fence(Release);
+            self.cursor.curr = self.cursor.prev.load(Acquire, self.guard);
+
+            if !prev.validate() {
+                mem::swap(&mut self.cursor.prev, &mut prev);
+                fence(Release);
+                self.cursor.curr = self.cursor.prev.load(Acquire, self.guard);
+                prev.finish();
+                return Some(Err(()));
+            }
+
+            prev.finish();
+            Some(Ok(data))
+        }
     }
 }
 
 impl<T> Drop for OptimisticFineGrainedListSet<T> {
     fn drop(&mut self) {
-        todo!()
+        let guard = pin();
+        let mut this: WriteGuard<'_, Atomic<Node<T>>> = self.head.write_lock();
+
+        let mut ptr = this.deref().load(Acquire, &guard);
+        while !ptr.is_null() {
+            drop(this);
+            this = unsafe { ptr.deref().next.write_lock() };
+            ptr = this.deref().load(Acquire, &guard);
+        }
     }
 }
 
