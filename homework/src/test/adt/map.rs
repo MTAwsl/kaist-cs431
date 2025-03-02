@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::thread::scope;
 
+// use std::sync::atomic::Ordering::*;
+// use std::sync::atomic::AtomicUsize;
 use crossbeam_epoch::pin;
 use rand::prelude::*;
 
@@ -213,6 +215,7 @@ pub fn stress_concurrent<
     steps: usize,
 ) {
     let map = M::default();
+    // let t_op = AtomicUsize::new(0);
 
     scope(|s| {
         let mut handles = Vec::new();
@@ -234,6 +237,10 @@ pub fn stress_concurrent<
                             let _ = map.delete(&key, &pin());
                         }
                     }
+                    // let top = t_op.fetch_add(1, Relaxed);
+                    // if (top+1) % 1000000 == 0 {
+                    //     println!("Op: {}", top);
+                    // }
                 }
             });
             handles.push(handle);

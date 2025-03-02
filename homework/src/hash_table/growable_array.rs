@@ -3,6 +3,7 @@
 use core::fmt::Debug;
 use core::mem::{self, ManuallyDrop};
 use core::sync::atomic::Ordering::*;
+use core::sync::atomic::fence;
 
 use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 
@@ -129,6 +130,7 @@ use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 #[derive(Debug)]
 pub struct GrowableArray<T> {
     root: Atomic<Segment<T>>,
+    // test_arr: Vec<Atomic<T>>,
 }
 
 const SEGMENT_LOGSIZE: usize = 10;
@@ -164,7 +166,21 @@ impl<T> Segment<T> {
     ///
     /// `self` must actually have height `height`.
     unsafe fn deallocate(self, height: usize) {
-        todo!()
+        unsafe {
+            let guard = &crossbeam_epoch::pin();
+            if height > 0 {
+                for i in 0..self.children.len() {
+                    if self.children[i].load(Relaxed, guard).is_null() {
+                        continue;
+                    }
+                    self.children[i]
+                        .clone()
+                        .into_owned()
+                        .into_box()
+                        .deallocate(height - 1);
+                }
+            }
+        }
     }
 }
 
@@ -177,7 +193,13 @@ impl<T> Debug for Segment<T> {
 impl<T> Drop for GrowableArray<T> {
     /// Deallocate segments, but not the individual elements.
     fn drop(&mut self) {
-        todo!()
+        unsafe {
+            self.root
+                .clone()
+                .into_owned()
+                .into_box()
+                .deallocate(self.root.load(Relaxed, &crossbeam_epoch::pin()).tag());
+        }
     }
 }
 
@@ -191,13 +213,80 @@ impl<T> GrowableArray<T> {
     /// Create a new growable array.
     pub fn new() -> Self {
         Self {
-            root: Atomic::null(),
+            root: Atomic::from(Segment::<T>::new().with_tag(0)),
+            // test_arr: vec![Atomic::null(); 100000],
         }
     }
 
     /// Returns the reference to the `Atomic` pointer at `index`. Allocates new segments if
     /// necessary.
     pub fn get<'g>(&self, mut index: usize, guard: &'g Guard) -> &'g Atomic<T> {
-        todo!()
+        let mut mask = (1 << SEGMENT_LOGSIZE) - 1;
+        let mut height = 0;
+        // println!("Mask init: 0x{mask:2x}");
+        while index & mask != index {
+            height += 1;
+            mask = mask << SEGMENT_LOGSIZE | mask;
+            // println!("Mask padded: 0x{mask:2x}");
+        }
+
+        // println!("Getting: 0x{index:2x}, height: {height}");
+
+        if height > (std::mem::size_of::<usize>() << 3) / SEGMENT_LOGSIZE {
+            panic!(
+                "growable_array::get : Index overflow. {height} > {}. Idx: 0x{:02x}",
+                (std::mem::size_of::<usize>() << 3) / SEGMENT_LOGSIZE,
+                index
+            );
+        }
+
+        // Create segments bottom-up
+        let mask =
+            ((1usize << SEGMENT_LOGSIZE) - 1).wrapping_shl((SEGMENT_LOGSIZE * height) as u32);
+        fence(Acquire);
+        for layer in (0..height).rev() {
+            // println!("Layer: {layer}");
+            let ptr = self.root.load(Relaxed, guard);
+            if ptr.tag() >= height {
+                break;
+            }
+            let mut new_segment = Segment::<T>::new().with_tag(ptr.tag() + 1);
+            unsafe { new_segment.children[0] = Atomic::from(ptr) };
+            let _ = self
+                .root
+                .compare_exchange(ptr, new_segment, AcqRel, Acquire, guard);
+        }
+
+        // Locate element top-down
+        let mut atm_ptr = &self.root;
+        let mask = (1 << SEGMENT_LOGSIZE) - 1;
+        let mut ptr = atm_ptr.load(Acquire, guard);
+        unsafe {
+            for layer in (0..=ptr.tag()).rev() {
+                let offset = (index >> (SEGMENT_LOGSIZE * layer)) & mask;
+                // println!("Index: 0x{:2X}, Offset: 0x{:2X}, Mask: 0x{:2X}", index, offset, mask);
+                if !ptr.is_null() {
+                    if layer == 0 {
+                        return &ptr.as_ref().unwrap().elements[offset];
+                    }
+                    // println!("Layer: {layer}, Prev Ptr: {atm_ptr:?}");
+                    atm_ptr = &ptr.as_ref().unwrap().children[offset];
+                    // println!("Layer: {layer}, Goto Ptr: {atm_ptr:?}");
+                } else {
+                    // println!("Layer: {layer}, Prev Ptr: {atm_ptr:?}");
+                    let new_segment = Segment::<T>::new().with_tag(layer);
+                    let res = atm_ptr.compare_exchange(ptr, new_segment, AcqRel, Acquire, guard);
+                    // println!("Layer: {layer}, Allocated Ptr: {atm_ptr:?}");
+                    if layer == 0 {
+                        return &atm_ptr.load(Relaxed, guard).as_ref().unwrap().elements[offset];
+                    }
+                    atm_ptr = &atm_ptr.load(Relaxed, guard).as_ref().unwrap().children[offset];
+                    // println!("Layer: {layer}, Goto Ptr: {atm_ptr:?}");
+                }
+                ptr = atm_ptr.load(Relaxed, guard);
+            }
+        }
+
+        panic!("growablearray_get: possible overflow of layers.");
     }
 }
