@@ -28,7 +28,7 @@ impl<'s> RetiredSet<'s> {
     pub fn new(hazards: &'s HazardBag) -> Self {
         Self {
             hazards,
-            inner: Vec::new(),
+            inner: Vec::with_capacity(Self::THRESHOLD),
             _marker: PhantomData,
         }
     }
@@ -58,13 +58,30 @@ impl<'s> RetiredSet<'s> {
             drop(unsafe { Box::from_raw(data.cast::<T>()) })
         }
 
-        todo!()
+        self.inner.push((pointer as *mut (), free::<T>));
+        if self.inner.len() >= Self::THRESHOLD {
+            // Free
+            println!("Retiring: {}", self.inner.len());
+            self.collect();
+        }
     }
 
     /// Free the pointers that are `retire`d by the current thread and not `protect`ed by any other
     /// threads.
     pub fn collect(&mut self) {
-        todo!()
+        let mut hazards = Vec::<(*mut (), unsafe fn(*mut ()))>::with_capacity(Self::THRESHOLD);
+        let protected = self.hazards.all_hazards();
+
+        for (ptr, free) in &self.inner {
+            if protected.contains(ptr) {
+                hazards.push((*ptr, *free));
+                continue;
+            }
+            // println!("Free?");
+            unsafe { free(*ptr) };
+        }
+
+        self.inner = hazards;
     }
 }
 
