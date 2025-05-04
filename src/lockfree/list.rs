@@ -229,6 +229,9 @@ where
     }
 
     /// Inserts a value between the previous and current node.
+    ///
+    /// Sayuri in May 5th 2025: This would cause the issue which the  TODO above describing.
+    ///                         Do not share a node betweej lists
     #[inline]
     pub fn insert(
         &mut self,
